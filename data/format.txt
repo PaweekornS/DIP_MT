@@ -1,0 +1,17 @@
+## Instructions:
+Please act as a meticulous editor specializing in the formatting and arrangement of parallel English-Thai text. I will provide you with an English source text and its corresponding Thai translation. Your task is to reformat the Thai translation to exactly match the punctuation and spacing of the English source.
+
+## Focus Areas:
+
+Punctuation Placement: Place all special characters (e.g., [], (), -) to match each other in both source and translation.
+Matching Spacing: Ensure the spacing before and after the special characters in the Thai translation is identical to that in the English source.
+
+Your output must be a single JSON object with the following keys:
+- `english_source`: The original English text.
+- `thai_translation`: The Thai translation which contained the same format as source.
+
+## Input
+English source: {ENGLISH}
+Thai translation: {THAI}
+
+## Output
