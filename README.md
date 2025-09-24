@@ -24,4 +24,4 @@ The main goal is to evaluate and improve the translation quality for category-sp
 - **Fine-tuning:** unsloth
 - **RAG:** faiss, langchain
 - **Inference:** vllm
-- **Evaluation:** WER, BLEU
+- **Evaluation:** CER, BLEU, COMET
