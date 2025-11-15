@@ -25,8 +25,12 @@ ROOT_DIR = "/project/lt200304-dipmt/paweekorn"
 with open(f"{ROOT_DIR}/data/prompt/base_prompt.txt", "r") as f:
     instruction = f.read()
 
-embeddings = HuggingFaceEmbeddings(model_name=f"{ROOT_DIR}/models/retriever/bge-m3",)
-vectorstore = FAISS.load_local(f"{ROOT_DIR}/faiss_allgoods", embeddings, allow_dangerous_deserialization=True)
+embed_model = "all-MiniLM-L6-v2"
+embeddings = HuggingFaceEmbeddings(model_name=f"{ROOT_DIR}/models/retriever/{embed_model}",)
+vectorstore = FAISS.load_local(f"{ROOT_DIR}/vector/{embed_model}", embeddings, allow_dangerous_deserialization=True)
+gpu_index = faiss.index_cpu_to_gpu(faiss.StandardGpuResources(), 0, vectorstore.index)
+vectorstore.index = gpu_index
+
 
 def get_relevant_docs(query, k=3):
     query_embedding = embeddings.embed_query(query)
@@ -37,25 +41,22 @@ def get_relevant_docs(query, k=3):
         relevant += f'''English: {doc.page_content}
 Thai: {doc.metadata['thai']}\n
 '''
-    rag_result = "\n## Retrieved References:\n" + relevant
+    rag_result = "\n## Retrieved References:\n" + relevant + "**Note:** If the retrieved references contain identical English terms with different Thai translations (ambiguity), you must use your expert judgment to select the most appropriate and contextually accurate Thai translation for the current input.\n"
     return rag_result
 
 
-def formatting_prompt(df, tokenizer):
-    print("\nformatting prompt!")
+def formatting_prompt(df, tokenizer, isRAG):
     batch = []
     for _, row in df.iterrows():
         prompt = instruction.format(
             WIPO=row['WIPO'],
-            RAG_DOC=get_relevant_docs(row['ENG'], 3), 
+            RAG_DOC=get_relevant_docs(row['ENG'], 3) if isRAG else "", 
             ENGLISH=row['ENG']
             )
         chat = [{"role": "user", "content": prompt}]
         chat = tokenizer.apply_chat_template(chat, tokenize=False, add_generation_prompt=True)
         batch.append(chat)
     
-    print("Example prompt:", batch[0])
-
     return batch
 
 
@@ -72,11 +73,12 @@ def data_prep(dataset):
 
 
 def inference(queries, model, lora_request):
-    decoding_params = SamplingParams(temperature=0.2,
-                                max_tokens=2048,
-                                skip_special_tokens=True,
-                                repetition_penalty=1.15
-                                )
+    decoding_params = SamplingParams(
+        temperature=0.2,
+        max_tokens=4096,
+        skip_special_tokens=True,
+        repetition_penalty=1.15
+    )
 
     results = model.generate(queries, decoding_params, lora_request=lora_request)
     response = [r.outputs[0].text for r in results]
@@ -85,7 +87,7 @@ def inference(queries, model, lora_request):
 
 
 def extract_json(text):
-    text = text.split('</think>')[-1]
+    text = text[text.rfind("{"):]
     pattern = r'''{\s*[\'\"]thai_translation[\'\"]:\s*[\'\"].*?[\'\"]\s*}'''
     matches = re.findall(pattern, text, re.DOTALL)
 
@@ -122,18 +124,19 @@ def main():
     ap.add_argument("--model_dir", required=True, help="model for fine-tuning")
     ap.add_argument("--adapter_dir", required=False, help="fine-tuned adapter (optional)", default=None)
     ap.add_argument("--quantization", required=False, help="quantization", default="bitsandbytes")
+    ap.add_argument("--is_rag", required=False, default=False)
     ap.add_argument("--save_dir", required=False, help="save directory", default=None)
     args = ap.parse_args()
     
     # setup dataset
+    print("\nSetup chat template\n")
     test_df = data_prep(args.dataset)
     
-    tokenizer = AutoTokenizer.from_pretrained(args.model_dir)
-    test_set = formatting_prompt(test_df, tokenizer)
+    tokenizer = AutoTokenizer.from_pretrained(args.model_dir, use_fast=True)
+    test_set = formatting_prompt(test_df, tokenizer, (args.is_rag.lower()=="true"))
     
     # init model
-    enable_lora = False if "gemma3" in args.model_dir else True
-    lora_request = None if "gemma3" in args.model_dir else LoRARequest("lora_adapter", 1, args.adapter_dir)
+    lora_request = LoRARequest("lora_adapter", 1, args.adapter_dir) if args.adapter_dir else None
         
     print(f"\nInitialize model: {args.model_dir.split("/")[-1]}\n")
     model = LLM(
@@ -144,7 +147,7 @@ def main():
         enable_prefix_caching=True,
         gpu_memory_utilization=0.5,
         enforce_eager=False,
-        enable_lora=enable_lora,
+        enable_lora=True,
         max_lora_rank=64,
     )
     
