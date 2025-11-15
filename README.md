@@ -1,5 +1,4 @@
-# DIP Project: English-to-Thai Machine Translation for Product Categories  
-*(WIPO Nice Classification Benchmarking)*
+# DIP Project: English-to-Thai Machine Translation system for WIPO Nice Classification Products and Services 
 
 ## 📌 Project Overview
 This project focuses on **English → Thai machine translation (En2Th)** with domain-specific emphasis on **product and service categories** defined by the **WIPO Nice Classification** system.  
