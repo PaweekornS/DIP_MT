@@ -15,12 +15,12 @@ BASE_DIR=/project/lt200304-dipmt/paweekorn
 
 echo "[$(date)] Starting Fine-tuning Job on ${SLURM_JOB_NODELIST:-node}"
 
-python gemma3_ft.py \
+python finetuning.py \
   --train_dataset $BASE_DIR/data/train_40k.csv \
   --test_dataset $BASE_DIR/data/DS01/test_v1.csv \
   --model_dir $BASE_DIR/models/base/gemma3-4b-it \
   --load_in_4bit False \
-  --rank 16 \
+  --rank 64 \
   --target_modules q_proj,k_proj,v_proj,o_proj,up_proj,down_proj,gate_proj \
 
 rm -rf $BASE_DIR/JOB/unsloth_training_checkpoints
