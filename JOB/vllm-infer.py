@@ -4,7 +4,7 @@ from transformers import AutoTokenizer
 
 from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
 from pythainlp.tokenize import word_tokenize
-from jiwer import wer
+from jiwer import cer
 import torch.distributed as dist
 import torch
 
@@ -14,7 +14,6 @@ from langchain_huggingface.embeddings import HuggingFaceEmbeddings
 
 import pandas as pd
 import numpy as np
-from tqdm import tqdm
 
 import json
 import re
@@ -22,22 +21,38 @@ import argparse
 
 
 ROOT_DIR = "/project/lt200304-dipmt/paweekorn"
-with open(f"{ROOT_DIR}/data/prompt/base_prompt.txt", "r") as f:
+with open(f"{ROOT_DIR}/data/prompt/base_en2th.txt", "r") as f:
     instruction = f.read()
 
-embed_model = "all-MiniLM-L6-v2"
+embed_model = "bge-m3"
 embeddings = HuggingFaceEmbeddings(model_name=f"{ROOT_DIR}/models/retriever/{embed_model}",)
-vectorstore = FAISS.load_local(f"{ROOT_DIR}/vector/{embed_model}", embeddings, allow_dangerous_deserialization=True)
+vectorstore = FAISS.load_local(f"{ROOT_DIR}/vector/en2th/{embed_model}", embeddings, allow_dangerous_deserialization=True)
 gpu_index = faiss.index_cpu_to_gpu(faiss.StandardGpuResources(), 0, vectorstore.index)
 vectorstore.index = gpu_index
 
+# ===============
+# Dataset
+# ===============
+def data_prep(dataset):
+    df = pd.read_csv(dataset)
 
+    with open(f'{ROOT_DIR}/data/wipo/WIPO.json', 'r') as f:
+        wipo_data = json.load(f)
+
+    wipo_data = {int(k): v for k, v in wipo_data.items()}
+    df['WIPO'] = df['NAME'].map(wipo_data)
+    
+    return df
+
+# ===============
+# Retrieval
+# ===============
 def get_relevant_docs(query, k=3):
     query_embedding = embeddings.embed_query(query)
     docs = vectorstore.similarity_search_by_vector(query_embedding, k=k)
     
     relevant = ""
-    for i, doc in enumerate(docs):
+    for doc in docs:
         relevant += f'''English: {doc.page_content}
 Thai: {doc.metadata['thai']}\n
 '''
@@ -59,31 +74,31 @@ def formatting_prompt(df, tokenizer, isRAG):
     
     return batch
 
-
-def data_prep(dataset):
-    df = pd.read_csv(dataset)
-
-    with open(f'{ROOT_DIR}/data/wipo/WIPO.json', 'r') as f:
-        wipo_data = json.load(f)
-
-    wipo_data = {int(k): v for k, v in wipo_data.items()}
-    df['WIPO'] = df['NAME'].map(wipo_data)
-    
-    return df
-
-
+# ===============
+# Inference
+# ===============
 def inference(queries, model, lora_request):
     decoding_params = SamplingParams(
-        temperature=0.2,
+        temperature=0.0, top_p=1, top_k=-1,
         max_tokens=4096,
         skip_special_tokens=True,
-        repetition_penalty=1.15
+        repetition_penalty=1.15,
+        frequency_penalty=0.2
     )
 
     results = model.generate(queries, decoding_params, lora_request=lora_request)
     response = [r.outputs[0].text for r in results]
     
     return response
+
+
+# ===============
+# Evaluation
+# ===============
+def filter_thai(text):
+    pattern = r'[\u0e00-\u0e7f\s,.?!]+'
+    matches = re.findall(pattern, text)
+    return "".join(matches).strip().replace("\n", "")
 
 
 def extract_json(text):
@@ -96,26 +111,31 @@ def extract_json(text):
             loaded = json.loads(matches[0])
             return loaded['thai_translation']
         except json.JSONDecodeError as e:
-            return np.nan
+            return filter_thai(text)
     else:
-        return np.nan
+        return filter_thai(text)
     
     
 def compute_score(df):    
-    wer_result, bleu = [], []
+    cer_result, bleu = [], []
     chencherry = SmoothingFunction().method1
     for _, row in df.iterrows():
-        wer_result.append(wer(row['THA'], row['PRED_cleaned']))
+        sol = row["THA"]
+        pred = "" if pd.isna(row["PRED_cleaned"]) else row["PRED_cleaned"]
 
-        ref = word_tokenize(row['THA'], engine='attacut')
-        hyp = word_tokenize(row['PRED_cleaned'], engine='attacut')
+        # bleu score
+        ref = word_tokenize(sol, engine='attacut')
+        hyp = word_tokenize(pred, engine='attacut')
+
+        ref = [word for word in ref if not word.isspace()]
+        hyp = [word for word in hyp if not word.isspace()]
         
+        cer_result.append(cer(sol, pred))
         bleu.append(sentence_bleu([ref], hyp, smoothing_function=chencherry))
-        
-    wer_avg = np.mean(wer_result);  bleu_avg = np.mean(bleu)
 
-    print(f"\nAverage WER:", np.round(wer_avg, 4))
-    print(f"Average BLEU:", np.round(bleu_avg, 4))
+    df["BLEU"] = bleu
+    print(f"Average CER:", np.mean(cer_result).round(4))
+    print(f"Average BLEU:", np.mean(bleu).round(4))
 
 
 def main():

@@ -20,7 +20,7 @@ python vllm-infer.py \
   --quantization bitsandbytes \
   --model_dir $BASE_DIR/models/base/gemma3-4b-it \
   --is_rag True \
-  --adapter_dir $BASE_DIR/models/adapter/gemma3-4b-it/checkpoint-1242 \
-  --save_dir $BASE_DIR/data/infer-result/en2th/gemma3-4b-it_ft+RAG.csv
+  # --adapter_dir $BASE_DIR/models/adapter/gemma3-4b-it/checkpoint-1242 \
+  # --save_dir $BASE_DIR/data/infer-result/en2th/gemma3-4b-it_ft+RAG.csv
 
 echo "GPU Job Finished"
