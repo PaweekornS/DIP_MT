@@ -1,39 +1,37 @@
-import os
-import json
-import re
-from typing import Optional
-
-import faiss
-from langchain_community.vectorstores import FAISS
-from langchain_huggingface.embeddings import HuggingFaceEmbeddings
-
 from vllm import LLM, SamplingParams
 from vllm.lora.request import LoRARequest
 from transformers import AutoTokenizer
+
+from langchain_community.vectorstores import FAISS
+from langchain_huggingface.embeddings import HuggingFaceEmbeddings
 import torch
 
 from pydantic import BaseModel
 from fastapi import FastAPI
 import uvicorn
 
+from typing import Optional
+import json
+import re
+import os
+
 
 # =========================
 # Config / Paths
 # =========================
-ROOT_DIR = "/project/lt200304-dipmt/paweekorn"
+ROOT_DIR = os.getenv("ROOT_DIR") or ("/workspace" if os.path.exists("/workspace") else "./")
+ROOT_DIR = os.path.abspath(ROOT_DIR)
 
-EN2TH_PROMPT = f"{ROOT_DIR}/data/prompt/base_en2th.txt"
-TH2EN_PROMPT = f"{ROOT_DIR}/data/prompt/base_th2en.txt"
-WIPO_JSON_PATH = f"{ROOT_DIR}/data/wipo/WIPO.json"
+EN2TH_PROMPT = os.path.join(ROOT_DIR, "data", "base_en2th.txt")
+TH2EN_PROMPT = os.path.join(ROOT_DIR, "data", "base_th2en.txt")
+WIPO_JSON_PATH = os.path.join(ROOT_DIR, "data", "WIPO.json")
 
-EMBED_MODEL_NAME = "bge-m3"
-EMBED_MODEL_PATH = f"{ROOT_DIR}/models/retriever/{EMBED_MODEL_NAME}"
-
-ENG_FAISS_INDEX = f"{ROOT_DIR}/vector/en2th/{EMBED_MODEL_NAME}"
-THA_FAISS_INDEX = f"{ROOT_DIR}/vector/th2en/{EMBED_MODEL_NAME}"
+ENG_FAISS_INDEX = os.path.join(ROOT_DIR, "vectorstore", "en2th")
+THA_FAISS_INDEX = os.path.join(ROOT_DIR, "vectorstore", "th2en")
 
 # model config – สามารถเปลี่ยนมาใช้ env var ได้
-MODEL_DIR = os.getenv("MODEL_DIR", f"{ROOT_DIR}/models/base/gemma3-4b-it")
+EMBED_MODEL_PATH = "BAAI/bge-m3"
+MODEL_DIR = os.getenv("MODEL_DIR", "unsloth/gemma-3-1b-it")
 ADAPTER_DIR = None
 
 os.environ['VLLM_CONFIGURE_LOGGING'] = "0"
@@ -206,22 +204,17 @@ def startup_event():
         allow_dangerous_deserialization=True,
     )
 
-    # move vectorstore to GPU
-    gpu_res = faiss.StandardGpuResources()
-    gpu_index = faiss.index_cpu_to_gpu(gpu_res, 0, eng_vectorstore.index)
-    eng_vectorstore.index = gpu_index
-
     tokenizer = AutoTokenizer.from_pretrained(MODEL_DIR, use_fast=True)
     tp_size = torch.cuda.device_count() if torch.cuda.is_available() else 1
 
     # LLM setup
     llm = LLM(
         model=MODEL_DIR,
-        quantization="bitsandbytes",
-        max_model_len=8192,
+        quantization=None,
+        max_model_len=4096,
         tensor_parallel_size=tp_size,
         enable_prefix_caching=True,
-        gpu_memory_utilization=0.5,
+        gpu_memory_utilization=0.7,
         enforce_eager=True,
     )
     lora_request=None
