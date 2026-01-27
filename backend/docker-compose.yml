@@ -1,20 +1,18 @@
 services:
   backend:
+    image: nvidia/cuda:12.6.0-runtime-ubuntu22.04 
+    build: .
     container_name: machine-translation-api
-    build:
-      context: .
-      dockerfile: Dockerfile.dev
     ports:
       - "8000:8000"
     environment:
-      ROOT_DIR: /app
-      MODEL_ID: unsloth/gemma-3-1b-it
+      ROOT_DIR: /workspace
+      MODEL_DIR: unsloth/gemma-3-1b-it
       PORT: 8000
       TOKENIZERS_PARALLELISM: "false"
       NVIDIA_VISIBLE_DEVICES: all
     volumes:
-      - ./data:/app/data
-      - ./vectorstore:/app/vectorstore
+      - ./:/workspace:ro
     deploy:
       resources:
         reservations:

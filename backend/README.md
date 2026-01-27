@@ -25,15 +25,12 @@ curl -X POST http://localhost:<localport>/translate \
 ```
 
 ## Local usage
-1. download FAISS vectorstore and extract into this workspace:
-https://drive.google.com/file/d/1YKPXZiuxWsjBSBYTXfkVN0gdG0g3Njho/view?usp=sharing
-
-2. run docker
+1. run docker
 ```bash
 docker-compose build
 docker-compose up
 ```
-3. test api
+2. test api
 - health check
 ``` bash
 curl http://localhost:8000/health
