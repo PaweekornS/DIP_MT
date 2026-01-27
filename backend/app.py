@@ -1,40 +1,16 @@
-from vllm import LLM, SamplingParams
-from vllm.lora.request import LoRARequest
+from vllm import LLM
 from transformers import AutoTokenizer
+from utils.retrieve import build_en2th_prompt, extract_json, inference_mt
 
 from langchain_community.vectorstores import FAISS
 from langchain_huggingface.embeddings import HuggingFaceEmbeddings
 import torch
 
+from contextlib import asynccontextmanager
 from pydantic import BaseModel
 from fastapi import FastAPI
 import uvicorn
-
-from typing import Optional
-import json
-import re
 import os
-
-
-# =========================
-# Config / Paths
-# =========================
-ROOT_DIR = os.getenv("ROOT_DIR") or ("/workspace" if os.path.exists("/workspace") else "./")
-ROOT_DIR = os.path.abspath(ROOT_DIR)
-
-EN2TH_PROMPT = os.path.join(ROOT_DIR, "data", "base_en2th.txt")
-TH2EN_PROMPT = os.path.join(ROOT_DIR, "data", "base_th2en.txt")
-WIPO_JSON_PATH = os.path.join(ROOT_DIR, "data", "WIPO.json")
-
-ENG_FAISS_INDEX = os.path.join(ROOT_DIR, "vectorstore", "en2th")
-THA_FAISS_INDEX = os.path.join(ROOT_DIR, "vectorstore", "th2en")
-
-# model config – สามารถเปลี่ยนมาใช้ env var ได้
-EMBED_MODEL_PATH = "BAAI/bge-m3"
-MODEL_DIR = os.getenv("MODEL_DIR", "unsloth/gemma-3-1b-it")
-ADAPTER_DIR = None
-
-os.environ['VLLM_CONFIGURE_LOGGING'] = "0"
 
 # =========================
 # FastAPI schemas
@@ -42,195 +18,40 @@ os.environ['VLLM_CONFIGURE_LOGGING'] = "0"
 class EnglishRequest(BaseModel):
     wipo_id: int
     english: str
-    
-class ThaiRequest(BaseModel):
-    wipo_id: int
-    thai: str
 
 class TranslateResponse(BaseModel):
     translation: str
 
-# =========================
-# Utility: Thai filtering / JSON extraction
-# =========================
-def filter_thai(text: str) -> str:
-    pattern = r'[\u0e00-\u0e7f\s,.?!]+'
-    matches = re.findall(pattern, text)
-    return "".join(matches).strip().replace("\n", "")
-
-
-def extract_json(text: str, en2th=True) -> str:
-    text = text[text.rfind("{"):]
-    if en2th:
-        pattern = r'''{\s*[\'\"]thai_translation[\'\"]:\s*[\'\"].*?[\'\"]\s*}'''
-    else:
-        pattern = r'''{\s*[\'\"]eng_translation[\'\"]:\s*[\'\"].*?[\'\"]\s*}'''
-        
-    matches = re.findall(pattern, text, re.DOTALL)
-    if matches:
-        try:
-            loaded = json.loads(matches[0])
-            return loaded['thai_translation'] if en2th else loaded['eng_translation']
-        except json.JSONDecodeError:
-            return filter_thai(text)
-    else:
-        return filter_thai(text)
-
 
 # =========================
-# Retrieval
+# FastAPI start-tup
 # =========================
-def get_relevant_docs(query: str, k: int = 3, isEnglish: bool = True) -> str:
-    query_embedding = embeddings.embed_query(query)
-    if isEnglish:
-        docs = eng_vectorstore.similarity_search_by_vector(query_embedding, k=k)
-
-        relevant = ""
-        for doc in docs:
-            relevant += f'''English: {doc.page_content}
-    Thai: {doc.metadata.get("thai", "")}\n
-    '''
-
-        rag_result = (
-            "\n## Retrieved References:\n" +
-            relevant +
-            "**Note:** If the retrieved references contain identical English terms "
-            "with different Thai translations (ambiguity), you must use your expert "
-            "judgment to select the most appropriate and contextually accurate Thai "
-            "translation for the current input.\n"
-        )
-    else:
-        docs = th_vectorstore.similarity_search_by_vector(query_embedding, k=k)
-        relevant = ""
-        for doc in docs:
-            relevant += f'''Thai: {doc.page_content}
-            English: {doc.metadata.get("eng", "")}\n'''
-        rag_result = relevant
-    return rag_result
-
-
-# =========================
-# Prompt formatting
-# =========================
-def build_en2th_prompt(wipo_id: int, english: str) -> tuple[str, Optional[str]]:
-    wipo_label = wipo_data.get(int(wipo_id), "")
-    rag_doc = get_relevant_docs(english, 3, isEnglish=True)
-
-    prompt = en2th_instruction.format(
-        WIPO=wipo_label,
-        RAG_DOC=rag_doc,
-        ENGLISH=english,
-    )
-
-    chat = [{"role": "user", "content": prompt}]
-    chat_str = tokenizer.apply_chat_template(
-        chat, tokenize=False, add_generation_prompt=True
-    )
-    return chat_str
-
-
-def build_th2en_prompt(wipo_id: int, thai: str) -> tuple[str, Optional[str]]:
-    wipo_label = wipo_data.get(int(wipo_id), "")
-    rag_doc = get_relevant_docs(thai, 3, isEnglish=False)
-
-    prompt = th2en_instruction.format(
-        WIPO=wipo_label,
-        RAG_DOC=rag_doc,
-        THAI=thai,
-    )
-
-    chat = [{"role": "user", "content": prompt}]
-    chat_str = tokenizer.apply_chat_template(
-        chat, tokenize=False, add_generation_prompt=True
-    )
-    return chat_str
-
-
-# =========================
-# Inference
-# =========================
-def run_inference_single(query: str) -> str:
-    decoding_params = SamplingParams(
-        temperature=0.0, top_p=1.0, top_k=-1,
-        max_tokens=8192, skip_special_tokens=True,
-        repetition_penalty=1.15,
-        frequency_penalty=0.2,
-    )
-
-    results = llm.generate(
-        [query],
-        decoding_params,
-        lora_request=lora_request,
-    )
-    return results[0].outputs[0].text
-
-
-# =========================
-# FastAPI lifecycle
-# =========================
-app = FastAPI(title="En2Th Translation API (vLLM + RAG)")
-
-@app.on_event("startup")
-def startup_event():
-    global en2th_instruction, th2en_instruction, wipo_data
-    global embeddings, eng_vectorstore, th_vectorstore
-    global tokenizer, llm, lora_request
-
-    # ---- Load instruction template ----
-    with open(EN2TH_PROMPT, "r") as f:
-        en2th_instruction = f.read()
-        
-    with open(TH2EN_PROMPT, "r") as f:
-        th2en_instruction = f.read()
-
-    # ---- Load WIPO mapping ----
-    with open(WIPO_JSON_PATH, "r") as f:
-        raw = json.load(f)
-        wipo_data = {int(k): v for k, v in raw.items()}
-
-    # ---- Embeddings + FAISS (RAG) ----
-    embeddings = HuggingFaceEmbeddings(
-        model_name=EMBED_MODEL_PATH,
-    )
-    eng_vectorstore = FAISS.load_local(
-        ENG_FAISS_INDEX,
-        embeddings,
-        allow_dangerous_deserialization=True,
-    )
-    
-    th_vectorstore = FAISS.load_local(
-        THA_FAISS_INDEX,
-        embeddings,
-        allow_dangerous_deserialization=True,
-    )
-
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_DIR, use_fast=True)
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global llm
     tp_size = torch.cuda.device_count() if torch.cuda.is_available() else 1
 
     # LLM setup
     llm = LLM(
-        model=MODEL_DIR,
-        quantization=None,
+        model=os.getenv("MODEL_ID", "unsloth/gemma-3-1b-it"),
+        quantization="bitsandbytes",
         max_model_len=4096,
         tensor_parallel_size=tp_size,
         enable_prefix_caching=True,
         gpu_memory_utilization=0.7,
         enforce_eager=True,
     )
-    lora_request=None
-
+    
 
 # =========================
-# Health check
+# FastAPI start-tup
 # =========================
+app = FastAPI(title="En2Th Translation API (vLLM + RAG)", lifespan=lifespan)
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
 
-
-# =========================
-# Main endpoint
-# =========================
 @app.post("/translate_en2th", response_model=TranslateResponse)
 def translate_en2th(req: EnglishRequest):
     chat_str = build_en2th_prompt(
@@ -239,26 +60,11 @@ def translate_en2th(req: EnglishRequest):
     )
 
     # vLLM inference
-    raw_output = run_inference_single(chat_str)
+    raw_output = inference_mt(llm, chat_str)
     thai_cleaned = extract_json(raw_output, en2th=True)
 
     return TranslateResponse(
         translation=thai_cleaned,
-    )
-    
-@app.post("/translate_th2en", response_model=TranslateResponse)
-def translate_th2en(req: ThaiRequest):
-    chat_str = build_th2en_prompt(
-        wipo_id=req.wipo_id,
-        thai=req.thai,
-    )
-
-    # vLLM inference
-    raw_output = run_inference_single(chat_str)
-    eng_cleaned = extract_json(raw_output, en2th=False)
-
-    return TranslateResponse(
-        translation=eng_cleaned,
     )
 
 
